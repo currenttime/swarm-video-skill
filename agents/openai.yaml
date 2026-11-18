@@ -1,0 +1,4 @@
+interface:
+  display_name: "Swarm Video Skill 多光标剪辑演示"
+  short_description: "只需上传一条成片，自动套用工作区模板并生成多光标和多轨时间线"
+  default_prompt: "使用 $swarm-video-skill，把我上传的成片放进工作区模板，生成多光标协作和逐步建立的时间线。"

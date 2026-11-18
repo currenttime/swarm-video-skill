@@ -1,0 +1,15 @@
+node_modules/
+__pycache__/
+*.pyc
+*.part
+*.log
+outputs/
+overlay/
+checks/
+*.mp4
+*.mov
+*.m4a
+*.zip
+.env
+.env.*
+.DS_Store
