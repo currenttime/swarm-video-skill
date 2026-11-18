@@ -6,6 +6,7 @@ from fractions import Fraction
 from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
+from panels import PANEL_NAMES, linked_clicks, overlaps, panel_motion, workspace_layout
 from workspaces import PRESETS, load_workspace, pixel_box, player_filter, select_workspace
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -87,47 +88,62 @@ def detect_layout(images):
 
 
 def validate_layout(l):
-    if 'timeline' not in l or set(l)-{'timeline','thumbnail','player'}:raise ValueError('Layout needs timeline and accepts player and thumbnail rectangles')
+    if 'timeline' not in l or set(l)-{'timeline','thumbnail','player','preview',*PANEL_NAMES}:
+        raise ValueError('Layout needs a timeline rectangle and accepts player, preview, thumbnail and workspace panels')
     for name,r in l.items():
         if set(r)!={'x','y','width','height'}:raise ValueError('Rectangles need x,y,width,height')
         if not all(isinstance(v,(int,float)) and math.isfinite(v) and 0<=v<=1 for v in r.values()):raise ValueError('Use finite normalized coordinates 0..1')
         if r['width']<=0 or r['height']<=0 or r['x']+r['width']>1.000001 or r['y']+r['height']>1.000001:raise ValueError('Rectangle extends outside image')
     if l['timeline']['height']<.16 or l['timeline']['width']<.4:raise ValueError('Timeline is too small for readable multi-track animation')
-    if 'player' in l:
-        player, timeline = l['player'], l['timeline']
-        if player['width'] < .15 or player['height'] < .12:
-            raise ValueError('The player rectangle is too small.')
-        overlap_x = min(player['x'] + player['width'], timeline['x'] + timeline['width']) - max(player['x'], timeline['x'])
-        overlap_y = min(player['y'] + player['height'], timeline['y'] + timeline['height']) - max(player['y'], timeline['y'])
-        if overlap_x > 1e-8 and overlap_y > 1e-8:
-            raise ValueError('Player and timeline rectangles must not overlap.')
+    video_rect = l.get('player') or l.get('preview')
+    if video_rect and (video_rect['width'] < .15 or video_rect['height'] < .12):
+        raise ValueError('The player rectangle is too small.')
+    zones = ['timeline', *(name for name in PANEL_NAMES if name in l)]
+    if video_rect:
+        zones.append('player' if 'player' in l else 'preview')
+    for index, name in enumerate(zones):
+        for other in zones[index+1:]:
+            if overlaps(l[name], l[other]):
+                raise ValueError(f'{name} and {other} rectangles must not overlap.')
 
 
 def layout_sheet(image,l,out):
-    im=image.copy();d=ImageDraw.Draw(im);w,h=im.size;r=l['timeline']
-    d.rectangle([r['x']*w,r['y']*h,(r['x']+r['width'])*w,(r['y']+r['height'])*h],outline='#ff79bb',width=max(2,w//500))
-    d.text((r['x']*w+8,r['y']*h+8),'OVERLAY ONLY INSIDE THIS RECTANGLE',fill='#ff79bb')
-    if 'player' in l:
-        p = l['player']
-        d.rectangle((p['x']*w,p['y']*h,(p['x']+p['width'])*w,(p['y']+p['height'])*h),outline='#00ffb3',width=max(2,w//500))
-        d.text((p['x']*w+8,p['y']*h+8),'INPUT VIDEO',fill='#00ffb3')
-    else:
-        d.text((12,12),'ORIGINAL WORKSPACE PRESERVED OUTSIDE RECTANGLE',fill='#00ffb3')
+    im=image.copy();d=ImageDraw.Draw(im);w,h=im.size
+    for name, r in l.items():
+        if name == 'thumbnail':
+            continue
+        color = '#00ffb3' if name in ('player', 'preview') else '#ff79bb'
+        x, y = r['x']*w, r['y']*h
+        d.rectangle((x,y,x+r['width']*w,y+r['height']*h),outline=color,width=max(2,w//500))
+        d.text((x+8,y+8),name.upper(),fill=color)
     im.save(out)
 
-def make_plan(n,fps,width,height,speed,seconds,layout,seed):
+def make_plan(n,fps,width,height,speed,seconds,layout,seed,static_workspace=None):
     d=json.loads((ROOT/'assets/choreography.json').read_text(encoding='utf-8'))
+    layout=workspace_layout(layout)
+    validate_layout(layout)
     first_click = min(c['at'] for c in d['commits'])
     last_click = max(c['at'] for c in d['commits'])
     factor=min(n/d.pop('referenceFrames'),(n-3)/(last_click-first_click))
     d.update(width=width,height=height,fps=fps,durationInFrames=n,speed=speed,
-        timeScale=factor,timelineSeconds=seconds,layout=layout)
+        timeScale=factor,timelineSeconds=seconds,layout=layout,
+        staticWorkspace='player' in layout if static_workspace is None else static_workspace)
     offset = max(0, 1-first_click*factor)
     for c in d['commits']:c['at']=min(n-2,max(1,round(c['at']*factor+offset)))
     for c in d['clips']:c['at']=min(n-2,max(1,round(c['at']*factor+offset)))
-    for worker in d['crew']:
+    d['workspaceCues'] = linked_clicks(d['commits'], n, fps) if {'media','controls'} <= layout.keys() else []
+    d['panelActions'] = {name: [] for name in PANEL_NAMES}
+    side_workers = dict(zip(range(19, 28), ('media','media','controls','controls','inspector','inspector','inspector','transport','transport')))
+    for number, worker in enumerate(d['crew']):
         # Names are generic labels; all scheduling derives from one authored style.
         if seed!='models':worker['name']=f"Editor {int(worker['id'].split('-')[-1])+1:02}"
+        region = side_workers.get(number, 'timeline')
+        worker['area'] = region if region in layout else 'timeline'
+        if worker['area'] != 'timeline':
+            cue_frames = [cue[region] for cue in d['workspaceCues']] if number in (19,21) else ()
+            worker['segments'], actions = panel_motion(region, number, n, fps, cue_frames)
+            d['panelActions'][region].extend(actions)
+            continue
         rng=random.Random(907+int(worker['id'].split('-')[-1]))
         point_map={}
         def relocate(p):
@@ -141,6 +157,8 @@ def make_plan(n,fps,width,height,speed,seconds,layout,seed):
             s['to']=s['to']*factor+offset
             s['p0']=relocate(s['p0']);s['p1']=relocate(s['p1'])
     d['playhead']=[176+1714*i/max(1,n-1) for i in range(n)]
+    for actions in d['panelActions'].values():
+        actions.sort(key=lambda action: action['at'])
     return d
 
 def sync_checks(d):
@@ -151,8 +169,27 @@ def sync_checks(d):
         if not clicks or not any(math.dist(s['p0'],c['target'])<.01 for s in clicks):bad.append(c['id'])
         for id in c['clips']:
             if clips[id]['at']!=c['at']:bad.append(id)
+    commits={c['id']:c['at'] for c in d['commits']}
+    panel_actions=d.get('panelActions', {})
+    actual_actions = {}
+    for name, events in panel_actions.items():
+        actual_actions[name] = set()
+        for event in events:
+            worker=workers[f"worker-{event['worker']:02}"]
+            if worker.get('area')==name and any(
+                s['kind']=='click' and s['from']==event['at'] for s in worker['segments']
+            ):
+                actual_actions[name].add(event['at'])
+    cues=d.get('workspaceCues', [])
+    cue_pass=all(
+        cue['media'] in actual_actions['media'] and cue['controls'] in actual_actions['controls']
+        and cue['media'] < cue['controls'] < commits[cue['commit']]==cue['timeline']
+        for cue in cues
+    )
     return {'commit_count':len(d['commits']),'clip_count':len(d['clips']),'worker_count':len(d['crew']),
             'click_reveal_sync_pass':not bad,'bad_ids':bad[:20],
+            'workspace_cues':len(cues),'workspace_cue_sync_pass':cue_pass,
+            'panel_click_counts':{name:len(events) for name,events in panel_actions.items()},
             'clips_before_first_click':sum(c['at']<min(x['at'] for x in d['commits']) for c in d['clips'])}
 
 def contact_sheet(ff,output,n,fps,dest):
@@ -175,7 +212,8 @@ def prepare_video(ff, source, public, plan, start, end, background):
     if background is None:
         encode(ff, ['-i',source,'-map','0:v:0','-vf',filters,*options], base)
         thumb_video = base
-        thumb = plan['layout'].get('thumbnail', {'x':0.,'y':0.,'width':1.,'height':max(.1,plan['layout']['timeline']['y'])})
+        thumb = plan['layout'].get('thumbnail') or plan['layout'].get('preview') or plan['layout'].get('player') or {
+            'x':.24,'y':.12,'width':.52,'height':max(.1,plan['layout']['timeline']['y']-.20)}
         size = plan['width'], plan['height']
         crop = tuple(round(thumb[key] * length) for key, length in zip(('x','y'), size)) + (
             round((thumb['x']+thumb['width'])*size[0]), round((thumb['y']+thumb['height'])*size[1]))
@@ -189,11 +227,15 @@ def prepare_video(ff, source, public, plan, start, end, background):
         crop = None
 
     strip = Image.new('RGB', (1714, 34))
+    thumbnails = public / 'thumbs'
+    thumbnails.mkdir()
     for index in range(28):
         left, right = round(index*1714/28), round((index+1)*1714/28)
         frame = extract(ff, thumb_video, (frame_count-1)/fps*index/28)
         if crop:
             frame = frame.crop(crop)
+        frame.thumbnail((376,212),Image.Resampling.LANCZOS)
+        frame.save(thumbnails / f'{index:02}.png')
         strip.paste(frame.resize((right-left,34),Image.Resampling.LANCZOS), (left,0))
     strip.save(public / 'timeline-thumbnails.png')
 
@@ -206,6 +248,30 @@ def bake_workspace(ff, public, plan):
         '-map','[v]','-an','-frames:v',plan['durationInFrames'],'-c:v','libx264','-crf','0',
         '-preset','fast','-threads','4','-pix_fmt','yuv420p'], public/'source-fast.mp4')
 
+
+def side_cursor_coverage(plan, frames):
+    """Check rendered cursor colors in each enabled side panel, not just the layer bounds."""
+    width, height = plan['width'], plan['height']
+    region_colors = {}
+    for worker in plan['crew']:
+        area = worker.get('area', 'timeline')
+        if area == 'timeline':
+            continue
+        color = worker['color'].lstrip('#')
+        region_colors.setdefault(area, set()).add(int(color, 16))
+    counts = dict.fromkeys(region_colors, 0)
+    for fraction in (.20, .45, .70, .90):
+        index = round((len(frames)-1)*fraction)
+        with Image.open(frames[index]) as sprite:
+            for area, colors in region_colors.items():
+                x, y, w, h = pixel_box(plan['layout'][area], width, height)
+                pixels = np.asarray(sprite.crop((x,y,x+w,y+h)).convert('RGBA'), dtype=np.uint32)
+                rgb = (pixels[:,:,0] << 16) | (pixels[:,:,1] << 8) | pixels[:,:,2]
+                if np.count_nonzero((pixels[:,:,3] > 225) & np.isin(rgb,list(colors))) >= 12:
+                    counts[area] += 1
+    return counts
+
+
 def verify(ff,fp,out,src,source_hash,d,base,overlay,qa_dir):
     m=probe(fp,out,True);v=next(x for x in m['streams'] if x['codec_type']=='video');n=d['durationInFrames'];fps=d['fps']
     checks={'size':(v['width'],v['height'])==(d['width'],d['height']),
@@ -213,23 +279,30 @@ def verify(ff,fp,out,src,source_hash,d,base,overlay,qa_dir):
             'duration':abs(float(v.get('duration',m['format']['duration']))-n/fps)<1/fps+.002,
             'silent':not any(s['codec_type']=='audio' for s in m['streams']),
             'source_unchanged':digest(src)==source_hash}
-    # All generated artwork, including cursors, stays inside the timeline box.
-    w,h=d['width'],d['height'];box=d['layout']['timeline'];bad=[];frames=sorted(overlay.glob('element-*.png'))
-    x0=max(0,math.floor(box['x']*w)-2);x1=min(w,math.ceil((box['x']+box['width'])*w)+2)
-    y0=max(0,math.floor(box['y']*h)-2);y1=min(h,math.ceil((box['y']+box['height'])*h)+2)
-    mask=np.ones((h,w),dtype=bool);mask[y0:y1,x0:x1]=False
+    w,h=d['width'],d['height'];bad=[];frames=sorted(overlay.glob('element-*.png'))
+    mask=np.ones((h,w),dtype=bool)
+    sample_mask=mask.copy()
+    zones = ('timeline', *(name for name in PANEL_NAMES if name in d['layout']))
+    for name in zones:
+        box=d['layout'][name]
+        x0=math.floor(box['x']*w);x1=math.ceil((box['x']+box['width'])*w)
+        y0=math.floor(box['y']*h);y1=math.ceil((box['y']+box['height'])*h)
+        mask[max(0,y0-2):y1+2,max(0,x0-2):x1+2]=False
+        sample_mask[max(0,y0-16):y1+16,max(0,x0-16):x1+16]=False
     for i,p in enumerate(frames):
-        a=np.asarray(Image.open(p).getchannel('A'))
+        with Image.open(p) as rendered:
+            a=np.asarray(rendered.getchannel('A'))
         if a[mask].max(initial=0)>0:bad.append(i)
     checks['overlay_frame_count']=len(frames)==n
     checks['all_native_workspace_alpha_clear']=not bad
+    visible_side_cursors=side_cursor_coverage(d,frames) if frames else {}
+    checks['side_panel_cursors_visible']=all(value>=3 for value in visible_side_cursors.values())
     # Playback compression is lossy. Verify native workspace similarity outside
     # a small codec-block margin rather than claiming pixel-exact output.
-    margin=16;sample_mask=mask.copy()
-    sample_mask[max(0,y0-margin):min(h,y1+margin),max(0,x0-margin):min(w,x1+margin)]=False
     diffs=[];native_errors=[]
     player_errors = []
-    if 'player' in d['layout']:
+    has_static_player = d.get('staticWorkspace', 'player' in d['layout'])
+    if has_static_player:
         px, py, pw, ph = pixel_box(d['layout']['player'], w, h)
         player_box = np.s_[py+4:py+ph-4,px+4:px+pw-4]
     for frame in sorted(set([0,n//3,n*2//3,n-1])):
@@ -237,7 +310,7 @@ def verify(ff,fp,out,src,source_hash,d,base,overlay,qa_dir):
         err=np.mean((a-b)[sample_mask]**2)
         diffs.append(100. if err==0 else round(10*math.log10(255**2/err),2))
         native_errors.append(float(np.mean(np.abs(a-b)[sample_mask])))
-        if 'player' in d['layout']:
+        if has_static_player:
             player = np.asarray(extract(ff, base.parent/'player.mp4', frame/fps), dtype=float)
             player_errors.append(float(np.mean(np.abs(a[player_box]-player[4:-4,4:-4]))))
     checks['sample_native_workspace_psnr']=min(diffs)>32
@@ -250,6 +323,7 @@ def verify(ff,fp,out,src,source_hash,d,base,overlay,qa_dir):
         first = np.asarray(extract(ff, base, 0), dtype=float)
         checks['workspace_matches_static_template'] = bool(outside.any()) and float(np.mean(np.abs(first-still)[outside])) < 4
     sync=sync_checks(d);checks['click_reveal_sync']=sync['click_reveal_sync_pass']
+    checks['workspace_cue_sync']=sync['workspace_cue_sync_pass']
     # A second complete decode with stderr captured proves no reported corruption.
     dec=subprocess.run([ff,'-v','error','-i',str(out),'-f','null','-'],capture_output=True)
     checks['full_decode']=dec.returncode==0 and not dec.stderr.strip()
@@ -257,6 +331,7 @@ def verify(ff,fp,out,src,source_hash,d,base,overlay,qa_dir):
             'duration_seconds':n/fps,'frames':n,'fps':fps,'dimensions':[w,h],'native_workspace_psnr_samples_db':diffs,
             'native_workspace_mean_rgb_error_samples':native_errors,
             'player_mean_rgb_error_samples':player_errors,
+            'visible_side_cursor_samples_of_four':visible_side_cursors,
             'bad_native_workspace_frames':bad[:20],'review_scope':'Full decode, all overlay alpha frames, event sync and four native-workspace samples; not full human viewing.',
             'layout':d['layout'],'output':out.name}
     dump(qa_dir/'report.json',report);dump(qa_dir/'media.json',m)
@@ -272,7 +347,7 @@ def main():
     p.add_argument('--template',choices=PRESETS,help='Built-in static workspace, default: cut')
     p.add_argument('--workspace-image',type=Path,help='Custom static workspace screenshot (with --layout)')
     p.add_argument('--recording',action='store_true',help='Use the older workspace-recording workflow instead')
-    p.add_argument('--layout',type=Path,help='Normalized player and timeline rectangles')
+    p.add_argument('--layout',type=Path,help='Normalized timeline, player/preview and workspace panel rectangles')
     p.add_argument('--labels',choices=['generic','models'],default='generic')
     p.add_argument('--start',type=float,default=0,help='Seconds relative to first decoded video frame')
     p.add_argument('--end',type=float,help='End seconds relative to first decoded video frame')
@@ -319,8 +394,6 @@ def main():
         layout,det = detect_layout(images)
         if args.layout:
             layout=json.loads(args.layout.read_text(encoding='utf-8-sig'));det={'method':'explicit-layout','supported':True,'confidence':None}
-        if 'player' in layout:
-            raise ValueError('The recording workflow only accepts timeline and optional thumbnail rectangles.')
         artwork = images[0]
         for i,image in enumerate(images):image.save(qa/f'source-{i}.jpg')
     else:
@@ -330,16 +403,18 @@ def main():
         background = artwork = load_workspace(artwork_path)
         width, height = background.size
         det = {'method':'static-workspace','template':name,'supported':True}
+    validate_layout(layout)
+    layout=workspace_layout(layout)
     validate_layout(layout);dump(qa/'layout.json',layout);dump(qa/'layout-detection.json',det)
     layout_sheet(artwork,layout,qa/'layout.jpg')
     if args.analyze_only:print('ANALYSIS READY',out,flush=True);return
     if not det['supported']:raise RuntimeError('Unrecognized layout. Inspect checks/layout.jpg; provide --layout JSON with the actual timeline rectangle. The skill can choose it from checks/source-*.jpg.')
     source_hash=digest(src);project=out/'project';shutil.copytree(ROOT/'assets/project',project)
     public=project/'public';public.mkdir(parents=True)
-    d=make_plan(n,args.fps,width,height,args.speed,seconds,layout,args.labels)
+    d=make_plan(n,args.fps,width,height,args.speed,seconds,layout,args.labels,static_workspace=background is not None)
     dump(project/'src/workbench-data.json',d)
     sync=sync_checks(d);dump(qa/'events.json',sync)
-    if not sync['click_reveal_sync_pass']:raise RuntimeError('Choreography synchronization check failed')
+    if not sync['click_reveal_sync_pass'] or not sync['workspace_cue_sync_pass']:raise RuntimeError('Choreography synchronization check failed')
     dump(qa/'source.json',{'sha256':source_hash,'bytes':src.stat().st_size,'video_duration':source_duration,
         'video_start_pts':v.get('start_time'),'selected_start':args.start,'selected_end':end,
         'speed':args.speed,'frames':n,'duration_seconds':n/args.fps,'source_name':src.name,'workspace':det})

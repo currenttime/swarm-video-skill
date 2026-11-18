@@ -29,7 +29,9 @@ python scripts/run.py "成片.mp4" --workspace-image "workspace.png" --layout "l
 }
 ```
 
-之后直接运行 `python scripts/run.py "成片.mp4"`。显式指定 `--template` 或 `--workspace-image` 可覆盖本地默认图。截图外的面板保持静态，播放器使用等比缩放补边。透明光标和时间线动效统一限制在时间线区域内。
+之后直接运行 `python scripts/run.py "成片.mp4"`。显式指定 `--template` 或 `--workspace-image` 可覆盖本地默认图。播放器使用等比缩放补边。
+
+可以在同一布局里用 `media`（左上素材区）、`controls`（左下工作区）、`inspector`（右侧参数）和 `transport`（播放器下方控制区）指定面板矩形。旧配置会依据播放器和时间线之间的空间补齐可用区域。各区域互不重叠，顶栏和播放器留在动画区域之外。精确坐标示例见 [剪映布局](../docs/jianying-layout.json)。
 
 ## 继续使用录屏模式
 
@@ -38,4 +40,4 @@ python scripts/run.py "工作区录屏.mp4" --recording --analyze-only --output 
 python scripts/run.py "工作区录屏.mp4" --recording --layout "录屏布局.json" --output "输出目录"
 ```
 
-在 `checks/source-0.jpg` 到 `source-2.jpg` 中定位实际时间线，再核对 `layout.jpg`。选定矩形包括时间线工具栏、刻度和所有轨道。录屏模式的布局只写 `timeline`，可额外写 `thumbnail` 指定缩略图来源。如果录屏切换了工作区，需要按界面固定的区间分段。
+在 `checks/source-0.jpg` 到 `source-2.jpg` 中定位实际时间线、播放器和面板，再核对 `layout.jpg`。时间线矩形包括工具栏、刻度和所有轨道。用 `player` 或 `preview` 标注播放器保护区域，使用 `thumbnail` 可另行指定缩略图来源。缺少播放器坐标时，自动布局仅在左侧留出较窄的操作区；预览或面板位置特殊时应手动校准。录屏切换了工作区时，按界面固定的区间分段。

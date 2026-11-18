@@ -2,6 +2,7 @@ import React from 'react';
 import {AbsoluteFill, staticFile, useCurrentFrame} from 'remotion';
 import {Video} from '@remotion/media';
 import {CursorSwarm} from './Swarm';
+import {MediaPreload, WorkspacePanels} from './WorkspacePanels';
 import {timelineTransform} from './geometry';
 import D from './workbench-data.json';
 const C={bg:'#101619',panel:'#151D21',edge:'#303C42',muted:'#809198',text:'#D5DFE1',amber:'#EDBC69',cyan:'#79C8C4'};
@@ -65,7 +66,9 @@ const Timeline:React.FC<{frame:number}>=({frame})=>{
 export const Overlay:React.FC=()=>{
  const frame=useCurrentFrame();
  return <AbsoluteFill style={{pointerEvents:'none'}}>
+  <MediaPreload frame={frame}/>
   <svg width="100%" height="100%" preserveAspectRatio="none" viewBox="0 0 1920 1016">
+   <WorkspacePanels frame={frame}/>
    <g transform={timelineTransform}><Timeline frame={frame}/></g>
   </svg>
   <CursorSwarm crew={D.crew}/>

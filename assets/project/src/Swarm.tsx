@@ -1,12 +1,12 @@
 import React from 'react';
 import {AbsoluteFill, useCurrentFrame} from 'remotion';
 import motion from './workbench-data.json';
-import {mapPoint, timelineBounds} from './geometry';
+import {areas, boundsFor, mapPoint, timelineTransform} from './geometry';
 
 type Point = [number, number];
 type Feedback = {type: string; x: number; y: number; w: number; h: number; dx: number; dy: number; lane: string};
 type Segment = {from: number; to: number; p0: number[]; p1: number[]; kind: string; bend: number; feedback?: Feedback};
-type Worker = {id: string; name: string; color: string; role: string; size: number; phase: number; segments: Segment[]};
+type Worker = {id: string; name: string; color: string; role: string; area?: string; size: number; phase: number; segments: Segment[]};
 type State = {worker: Worker; p: Point; velocity: number; segment: Segment; u: number; opacity: number; label?: {x: number; y: number; w: number; h: number}};
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const smooth = (p: number) => p*p*(3-2*p);
@@ -19,7 +19,7 @@ export function stateAt(w: Worker, frame: number): State {
   const e=s.kind==='drag'||s.kind==='trim' ? smooth(u) : u<.5 ? 4*u*u*u : 1-Math.pow(-2*u+2,3)/2;
   const dx=s.p1[0]-s.p0[0],dy=s.p1[1]-s.p0[1];
   const bend=Math.sin(Math.PI*u)*s.bend;
-  const p: Point=mapPoint([s.p0[0]+dx*e-dy*bend,s.p0[1]+dy*e+dx*bend]);
+  const p: Point=mapPoint([s.p0[0]+dx*e-dy*bend,s.p0[1]+dy*e+dx*bend],w.area ?? 'timeline');
   return {worker:w,p,segment:s,u,velocity:Math.hypot(dx,dy)/(s.to-s.from)*(s.kind==='hold'?0:Math.sin(Math.PI*u)),opacity:clamp((frame+4)/8,.15,1)};
 }
 
@@ -27,14 +27,14 @@ function labelLayout(states: State[]) {
   const occupied: {x:number;y:number;w:number;h:number}[]=[];
   for(const state of states){
     const {worker:w,p:[x,y]}=state;
-    const width=w.name.length*6.25+17, height=19;
+    const [left,top,right,bottom]=boundsFor(w.area ?? 'timeline');
+    const width=Math.min(w.name.length*6.25+17,right-left-10), height=19;
+    if(width<24 || bottom-top<29)continue;
     const candidates=[[x+12,y+18],[x-width-4,y+17],[x+14,y-24],[x-width-6,y-23],[x+19,y+34],[x-width-9,y-38]];
     let best={x:0,y:0,w:width,h:height}, score=Infinity;
     for(let k=0;k<candidates.length;k++){
-      const cx=clamp(candidates[k][0],timelineBounds[0]+5,timelineBounds[2]-width-5),cy=clamp(candidates[k][1],timelineBounds[1]+5,timelineBounds[3]-height-5);
+      const cx=clamp(candidates[k][0],left+5,right-width-5),cy=clamp(candidates[k][1],top+5,bottom-height-5);
       const r={x:cx,y:cy,w:width,h:height};let q=k*8;
-      // Keep the content and portrait in the preview unobstructed.
-
       for(const a of occupied){const ow=Math.max(0,Math.min(cx+width,a.x+a.w)-Math.max(cx,a.x));const oh=Math.max(0,Math.min(cy+height,a.y+a.h)-Math.max(cy,a.y));q+=ow*oh*8;}
       if(q<score){score=q;best=r;}
     }
@@ -92,9 +92,18 @@ export const CursorSwarm: React.FC<{offset?: number; crew?: Worker[]}>=({offset=
   const states=labelLayout(crew.map((w)=>stateAt(w,frame)));
   return <AbsoluteFill style={{pointerEvents:'none',overflow:'hidden'}}>
     <svg width="100%" height="100%" preserveAspectRatio="none" viewBox="0 0 1920 1016" style={{position:'absolute',inset:0,overflow:'hidden'}}>
-      <defs><mask id="cursor-safe"><rect width="1920" height="1016" fill="black"/><rect x={timelineBounds[0]} y={timelineBounds[1]} width={timelineBounds[2]-timelineBounds[0]} height={timelineBounds[3]-timelineBounds[1]} fill="white"/></mask></defs><g mask="url(#cursor-safe)">{states.map((s)=><FeedbackLayer key={`f-${s.worker.id}`} state={s}/>)}
-      {states.map((s)=><Pointer key={s.worker.id} state={s} frame={frame}/>)}
-    </g></svg>
+      <defs>{areas.map(area=>{
+        const [x,y,right,bottom]=boundsFor(area);
+        return <clipPath id={`cursor-${area}`} key={area}><rect x={x} y={y} width={right-x} height={bottom-y}/></clipPath>;
+      })}</defs>
+      {areas.map(area=>{
+        const members=states.filter(s=>(s.worker.area ?? 'timeline')===area);
+        return <g key={area} clipPath={`url(#cursor-${area})`}>
+          {area==='timeline'?<g transform={timelineTransform}>{members.map(s=><FeedbackLayer key={s.worker.id} state={s}/>)}</g>:null}
+          {members.map(s=><Pointer key={s.worker.id} state={s} frame={frame}/>)}
+        </g>;
+      })}
+    </svg>
   </AbsoluteFill>;
 };
 

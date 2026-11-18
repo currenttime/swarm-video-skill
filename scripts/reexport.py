@@ -13,7 +13,7 @@ def main():
     digits=len(frames[0].stem.split('-')[-1]);pattern=overlay/f'element-%0{digits}d.png'
     out=root/'swarm-video-edited.mp4'
     if out.exists():raise ValueError('swarm-video-edited.mp4 already exists. Rename it to preserve the earlier edit, then retry.')
-    if 'player' in d['layout']:
+    if d.get('staticWorkspace', 'player' in d['layout']):
         bake_workspace(ff, base.parent, d)
     source_hash=digest(base)
     encode(ff,['-i',base,'-framerate',d['fps'],'-i',pattern,

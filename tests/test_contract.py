@@ -24,6 +24,8 @@ class ContractTests(unittest.TestCase):
         for n in [24,120,240,1865,3600]:
             d=make_plan(n,60,1920,1080,5,n/60*5,layout,'generic')
             self.assertTrue(sync_checks(d)['click_reveal_sync_pass'])
+            self.assertTrue(sync_checks(d)['workspace_cue_sync_pass'])
+            self.assertGreater(sync_checks(d)['workspace_cues'],0)
             self.assertEqual(len(d['crew']),28);self.assertEqual(len(d['tracks']),11)
             self.assertEqual(len(d['clips']),268);self.assertEqual(len(d['commits']),132)
             self.assertGreater(min(c['at'] for c in d['clips']),0)
@@ -31,8 +33,23 @@ class ContractTests(unittest.TestCase):
             for w in d['crew']:
                 self.assertTrue(w['segments']);self.assertLessEqual(w['segments'][0]['from'],0)
                 self.assertGreater(w['segments'][-1]['to'],n-1)
+                expected_y={'timeline':(618,1016),'media':(98,378),'controls':(378,618)}[w['area']]
                 for s in w['segments']:
-                    for point in [s['p0'],s['p1']]:self.assertGreaterEqual(point[1],618)
+                    for point in [s['p0'],s['p1']]:
+                        self.assertTrue(expected_y[0]<=point[1]<=expected_y[1], (w['area'],point))
+
+    def test_workspace_handoffs_have_clicks_in_all_regions(self):
+        layout={'timeline':{'x':0,'y':.62,'width':1,'height':.38},
+                'player':{'x':.34,'y':.13,'width':.35,'height':.35}}
+        plan=make_plan(480,60,1920,1080,1,8,layout,'generic')
+        report=sync_checks(plan)
+        self.assertEqual({w['area'] for w in plan['crew']}, {'media','controls','inspector','transport','timeline'})
+        self.assertTrue(report['workspace_cue_sync_pass'])
+        self.assertTrue(all(report['panel_click_counts'].values()))
+        self.assertGreater(report['workspace_cues'],3)
+        cue=plan['workspaceCues'][0]
+        plan['panelActions']['media']=[event for event in plan['panelActions']['media'] if event['at']!=cue['media']]
+        self.assertFalse(sync_checks(plan)['workspace_cue_sync_pass'])
 
     def test_sync_checker_finds_false_reveal(self):
         d=make_plan(1800,60,1280,720,5,150,{'timeline':{'x':0,'y':.6,'width':1,'height':.4}},'generic')
