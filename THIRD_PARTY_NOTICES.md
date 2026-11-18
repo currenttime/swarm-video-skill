@@ -10,4 +10,4 @@
 
 This project implements rendered cursor choreography locally. It does not depend on, embed, or install the DhvanilPatel/swarm-cursors browser extension. Product names identify possible source recordings and do not imply affiliation.
 
-Screen recordings, logos, music, and other user input remain the responsibility/property of their respective owners. This repository does not include the author's private recording or third-party BGM.
+The author provided the Jianying workspace screenshot and social profile cards in `docs/`. Software interfaces, platform logos, and other media belong to their respective owners. The repository's MIT license applies to its code.
